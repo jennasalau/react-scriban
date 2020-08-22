@@ -1,0 +1,15 @@
+dist/
+.DS_STORE
+node_modules
+scripts/flow/*/.flowconfig
+.flowconfig
+.module-cache
+*.log*
+*.sublime-project
+*.sublime-workspace
+.idea
+*.iml
+.vscode
+*.swp
+*.swo
+
