@@ -1,265 +1,28 @@
 import ReactReconciler from 'react-reconciler';
-import React from 'react';
 import fs from 'fs';
 
-import DOMProperty from './DOMProperty';
-import ReactScribanRenderer from './ReactScribanRenderer'; 
+import {renderTemplate} from './ReactScribanRenderer'; 
 
-const publicContext = {};
-const rootHostContext = {};
-const childHostContext = {};
+const _publicContext = {};
+const _rootHostContext = {};
+const _childHostContext = {};
 
 // https://www.konabos.com/blog/bootstrap-4-components-getting-fancy-with-scriban-sitecore-sxa.html
 // https://doc.sitecore.com/developers/sxa/93/sitecore-experience-accelerator/en/the-embedded-functions-for-the-scriban-template.html
-
-const __DEV__ = true;
-
-const hasOwnProperty = Object.prototype.hasOwnProperty;
-const STYLE = 'style';
-const RESERVED_PROPS = {
-	children: null,
-	dangerouslySetInnerHTML: null,
-	suppressContentEditableWarning: null,
-	suppressHydrationWarning: null,
-};
-
-// function validateRenderResult(child, type) {
-// 	if (child === undefined) {
-// 	  invariant(
-// 		false,
-// 		'%s(...): Nothing was returned from render. This usually means a ' +
-// 		  'return statement is missing. Or, to render nothing, ' +
-// 		  'return null.',
-// 		getComponentName(type) || 'Component',
-// 	  );
-// 	}
-//   }
-
-  const omittedCloseTags = {
-	area: true,
-	base: true,
-	br: true,
-	col: true,
-	embed: true,
-	hr: true,
-	source: true,
-	track: true,
-	wbr: true,
-	// NOTE: menuitem's close tag should be omitted, but that causes problems.
-  };
-
-/**
- * Escapes special characters and HTML entities in a given html string.
- *
- * @param  {string} string HTML string to escape for later insertion
- * @return {string}
- * @public
- */
-const matchHtmlRegExp = /["'&<>]/;
-function escapeHtml(string) {
-	const str = '' + string;
-	const match = matchHtmlRegExp.exec(str);
-  
-	if (!match) {
-	  return str;
-	}
-  
-	let escape;
-	let html = '';
-	let index;
-	let lastIndex = 0;
-  
-	for (index = match.index; index < str.length; index++) {
-	  switch (str.charCodeAt(index)) {
-		case 34: // "
-		  escape = '&quot;';
-		  break;
-		case 38: // &
-		  escape = '&amp;';
-		  break;
-		case 39: // '
-		  escape = '&#x27;'; // modified from escape-html; used to be '&#39'
-		  break;
-		case 60: // <
-		  escape = '&lt;';
-		  break;
-		case 62: // >
-		  escape = '&gt;';
-		  break;
-		default:
-		  continue;
-	  }
-  
-	  if (lastIndex !== index) {
-		html += str.substring(lastIndex, index);
-	  }
-  
-	  lastIndex = index + 1;
-	  html += escape;
-	}
-  
-	return lastIndex !== index ? html + str.substring(lastIndex, index) : html;
-  }
-  // end code copied and modified from escape-html
-
-/**
- * Escapes text to prevent scripting attacks.
- *
- * @param {*} text Text value to escape.
- * @return {string} An escaped string.
- */
-function escapeTextForBrowser(text) {
-	if (typeof text === 'boolean' || typeof text === 'number') {
-	  // this shortcircuit helps perf for types that we know will never have
-	  // special characters, especially given that this function is used often
-	  // for numeric dom ids.
-	  return '' + text;
-	}
-	return escapeHtml(text);
-  }
-
-
-function getNonChildrenInnerMarkup(props) {
-	const innerHTML = props.dangerouslySetInnerHTML;
-	if (innerHTML != null) {
-	  if (innerHTML.__html != null) {
-		return innerHTML.__html;
-	  }
-	} else {
-	  const content = props.children;
-	  if (typeof content === 'string' || typeof content === 'number') {
-		return escapeTextForBrowser(content);
-	  }
-	}
-	return null;
-}
-
-/**
- * Escapes attribute value to prevent scripting attacks.
- *
- * @param {*} value Value to escape.
- * @return {string} An escaped string.
- */
-function quoteAttributeValueForBrowser(value) {
-	return '"' + escapeTextForBrowser(value) + '"';
-}
-
-function templateAttributePropForScriban(value) {
-	return '"' + escapeTextForBrowser(value) + '"';
-}
-
-function shouldIgnoreAttribute(att, propertyInfo, isCustomComponent){
-	return DOMProperty.shouldIgnoreAttribute(att, propertyInfo, isCustomComponent);
-}
-
-
-function createMarkupForProperty(name, value, isSbn) {
-	const propertyInfo = DOMProperty.getPropertyInfo(name);
-	if (name !== 'style' && shouldIgnoreAttribute(name, propertyInfo, false)) {
-		return '';
-	}
-	// if (shouldRemoveAttribute(name, value, propertyInfo, false)) {
-	//   return '';
-	// }
-	if (propertyInfo !== null) {
-		const attributeName = propertyInfo.attributeName;
-		const {type} = propertyInfo;
-		if (type === BOOLEAN || (type === OVERLOADED_BOOLEAN && value === true)) {
-			return attributeName + '=""';
-		} else {
-			if (propertyInfo.sanitizeURL) {
-				value = '' + value;
-				JSON.stringify(value);
-			}
-			return attributeName + '=' + quoteAttributeValueForBrowser(value);
-		}
-	} else if (isSbn) {
-		return `${name}="#{{ i_item.${name} }}"`;
-		
-	} else if (DOMProperty.isAttributeNameSafe(name)) {
-		return name + '=' + quoteAttributeValueForBrowser(value);
-	}
-	return '';
-}
-
-function createMarkupForCustomAttribute(
-	name,
-	value,
-  ) {
-	if (!DOMProperty.isAttributeNameSafe(name) || value == null) {
-	  return '';
-	}
-	return name + '=' + '"' + value + '"';
-  }
-
-const styleNameCache = {};
-const processStyleName = function(styleName) {
-  if (styleNameCache.hasOwnProperty(styleName)) {
-	return styleNameCache[styleName];
-  }
-  const result = hyphenateStyleName(styleName);
-  styleNameCache[styleName] = result;
-  return result;
-};
-
-function createMarkupForStyles(styles) {
-	let serialized = '';
-	let delimiter = '';
-	for (const styleName in styles) {
-	  if (!styles.hasOwnProperty(styleName)) {
-		continue;
-	  }
-	  const isCustomProperty = styleName.indexOf('--') === 0;
-	  const styleValue = styles[styleName];
-	  if (__DEV__) {
-		if (!isCustomProperty) {
-		  warnValidStyle(styleName, styleValue);
-		}
-	  }
-	  if (styleValue != null) {
-		serialized +=
-		  delimiter +
-		  (isCustomProperty ? styleName : processStyleName(styleName)) +
-		  ':';
-		serialized += dangerousStyleValue(
-		  styleName,
-		  styleValue,
-		  isCustomProperty,
-		);
-  
-		delimiter = ';';
-	  }
-	}
-	return serialized || null;
-  }
-
-function isCustomComponentFn(tagName) {
-	if (tagName.indexOf('-') === -1) {
-		return false;
-	}
-	return true;
-}
-
-
-const newlineEatingTags = {
-	listing: true,
-	pre: true,
-	textarea: true,
-};
 
 const hostConfig = {
 	now: Date.now,
 	
 	getPublicInstance: () => {
-		return publicContext;
+		return _publicContext;
 	},
 
 	getRootHostContext: () => {
-		return rootHostContext;
+		return _rootHostContext;
 	},
 
 	getChildHostContext: () => {
-		return childHostContext;
+		return _childHostContext;
 	},
 
 	prepareForCommit: () => {
@@ -271,72 +34,22 @@ const hostConfig = {
 	},
 
 	createInstance: (type, props, rootContainerInstance, _currentHostContext, workInProgress) => {
-
-		console.log('rootContainerInstance ===> ', rootContainerInstance);
 		
-		const tag = type.toLowerCase();
-		let out = createOpenTagMarkup(tag, props, rootContainerInstance);
-		let footer = '';
-		if (omittedCloseTags.hasOwnProperty(tag)) {
-			out += '/>';
-		} else {
-			out += '>';
-			footer = '</' + tag + '>';
-		}
-
-		
-
-		let children;
-		const innerMarkup = getNonChildrenInnerMarkup(props);
-		if (innerMarkup != null) {
-			children = [];
-			if (
-				newlineEatingTags.hasOwnProperty(tag) &&
-				innerMarkup.charAt(0) === '\n'
-			) {
-				out += '\n';
-			}
-			out += innerMarkup;
-		} else {
-			children = React.Children.toArray(props.children);
-		}
-
-		return out + footer;
-
-		// console.log(newProps);
-		// const {children} = newProps;
-		
-		// let element = ``;
-
-		// console.log('createInstance()');
-
-		// Object.keys(newProps).forEach(propName => {
-		// 	const propValue = newProps[propName];
-		// 	if (propName === 'children') {
-		// 		if (typeof propValue === 'string' || typeof propValue === 'number') {
-		// 			element = `${element}${propValue}`;
-		// 		}
-		// 	} else if (propName === 'onClick') {
-		// 		domElement.addEventListener('click', propValue);
-		// 	} else if (propName === 'className') {
-		// 		domElement.setAttribute('class', propValue);
-		// 	} else {
-		// 		const propValue = newProps[propName];
-		// 		domElement.setAttribute(propName, propValue);
-		// 	}
-		// });
-
-		// <${type}
-		// return element;
+		//TODO: isRoot?
+		return renderTemplate(type, props, rootContainerInstance);
 	},
 
 	appendInitialChild: (parent, child) => {
-		console.log('appendInitialChild()');
-		return `${parent}${child}`;
+		if (typeof parent.children === 'array') {
+			parent.children.push(child);
+		} else {
+			parent.children = [child];
+		}
 	},
 
-	finalizeInitialChildren: (domElement, type, props) => {
-		console.log('finalizeInitialChildren()');
+	finalizeInitialChildren: (element, type, props) => {
+		//element.children.push(renderTemplate(type, props, {propTypes: {}}));
+		//console.log('finalizeInitialChildren()', domElement);
 	},
 
 	prepareUpdate(domElement, oldProps, newProps) {
@@ -378,19 +91,59 @@ const hostConfig = {
 	clearContainer: () => {console.log('getInstanceFromScope()');},
 	appendChildToContainer: (container, child) => {
 
-		fs.writeFile(container.path, child, function (err) {
+		const _renderChildren = (children, out = '', depth = 1) => {
+			if (children && children.length) {
+				
+				children.forEach((child) => {
+					let lead = '';
+					for(let i=0;i<depth;i++) {
+						lead += '\t';
+					}
+					if (child.children && child.children.length) {
+						out += lead + child.header + '\n';
+						_renderChildren(child.children, out, depth + 1);
+						out += lead + child.footer + '\n';
+					} else {
+						out += lead + child.header + child.children + child.footer + '\n';
+					}
+				});
+			}
+
+			return out;
+		};
+
+		let stream = `{{ # Template auto generated ${(new Date()).toString()} }}\n\n`;
+		stream += child.header + '\n';
+		stream += _renderChildren(child.children);
+		stream += child.footer + '\n';
+
+		fs.writeFile(container.path, stream, function (err) {
 			if (err) throw err;
 			console.log('Replaced!');
 		});
 
-		//console.log('appendChildToContainer()', container, child);
+		console.log('"%s" was created successfully', container.path);
 	},
 };
-const ReactScriban = ReactReconciler(hostConfig);
+
+
+const ReactSBN = ReactReconciler(hostConfig);
 
 let internalContainerStructure;
 module.exports = {
 	render(element, props, path, callback) {
+
+		// We must do this only once
+		if (!internalContainerStructure) {
+			internalContainerStructure = ReactSBN.createContainer(
+				{
+					propTypes: element.propTypes,
+					path: path,
+				},
+				false,
+				false
+			);
+		}
 
 		let _element;
 		if (typeof element === 'function') {
@@ -402,20 +155,6 @@ module.exports = {
 			_element = element;
 		}
 
-		// We must do this only once
-		if (!internalContainerStructure) {
-			internalContainerStructure = ReactScriban.createContainer(
-				{
-					propTypes: element.propTypes,
-					path: path,
-				},
-				false,
-				false
-			);
-		}
-
-
-
-		ReactScriban.updateContainer(_element, internalContainerStructure, null, callback);
+		ReactSBN.updateContainer(_element, internalContainerStructure, null, callback);
 	}
 };
